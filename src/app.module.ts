@@ -1,10 +1,8 @@
+// src/app.module.ts
 import { Module } from '@nestjs/common';
-import { AppController } from './app.controller';
-import { AppService } from './app.service';
+import { CheckoutDomainModule } from './domain/checkout/checkout.module';
 
 @Module({
-  imports: [],
-  controllers: [AppController],
-  providers: [AppService],
+  imports: [CheckoutDomainModule], // 도메인 모듈 장착!
 })
 export class AppModule {}
