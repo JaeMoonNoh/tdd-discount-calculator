@@ -4,11 +4,10 @@ import { CartItemDto, CouponDto, ReceiptDto, UserTier } from './checkout.dto';
 
 @Injectable()
 export class CheckoutCalculateService {
-  // 등급별 적립률 정책 (도메인 룰)
   private readonly pointRates: Record<UserTier, Decimal> = {
-    BRONZE: new Decimal('0.01'), // 1%
-    SILVER: new Decimal('0.03'), // 3%
-    GOLD: new Decimal('0.05'),   // 5%
+    BRONZE: new Decimal('0.01'),
+    SILVER: new Decimal('0.03'),
+    GOLD: new Decimal('0.05'),
   };
 
   calculateReceipt(
@@ -16,7 +15,6 @@ export class CheckoutCalculateService {
     coupons: CouponDto[],
     userTier: UserTier,
   ): ReceiptDto {
-    // 1. 원결제 금액 계산 (장바구니 아이템 총합)
     const originalTotal = cartItems.reduce(
       (acc, item) => acc.add(item.getTotalPrice()),
       new Decimal(0),
@@ -25,47 +23,57 @@ export class CheckoutCalculateService {
     let finalPayment = originalTotal;
     let totalDiscount = new Decimal(0);
 
-    // 2. 쿠폰 순차 적용 (룰 엔진)
     for (const coupon of coupons) {
-      let discountAmount = new Decimal(0);
-
-      if (coupon.type === 'FIXED') {
-        discountAmount = coupon.value;
-      } else if (coupon.type === 'PERCENT') {
-        // 정률 할인은 '현재까지 남은 결제 금액'을 기준으로 계산
-        discountAmount = finalPayment.times(coupon.value).floor();
-        
-        // Max Cap (최대 할인 한도) 엣지 케이스 방어
-        if (
-          coupon.maxDiscountAmount &&
-          discountAmount.greaterThan(coupon.maxDiscountAmount)
-        ) {
-          discountAmount = coupon.maxDiscountAmount;
-        }
-      }
+      // 리팩토링 포인트 1: 할인액 계산 책임을 별도 메서드로 위임 (추상화 수준 맞추기)
+      const discountAmount = this.calculateDiscountAmount(finalPayment, coupon);
 
       finalPayment = finalPayment.minus(discountAmount);
       totalDiscount = totalDiscount.add(discountAmount);
 
-      // 3. 마이너스 결제 방어 (엣지 케이스)
-      if (finalPayment.isNegative()) {
-        // 초과된 할인 금액을 다시 빼서 실제 상품가만큼만 할인으로 인정
-        totalDiscount = totalDiscount.minus(finalPayment.abs());
-        finalPayment = new Decimal(0);
-        break; // 결제 금액이 0원이 되면 남은 쿠폰은 무의미하므로 즉시 종료
-      }
+      // 리팩토링 포인트 2: 마이너스 결제 방어 로직도 별도 메서드로 추출
+      const adjusted = this.preventNegativePayment(finalPayment, totalDiscount);
+      finalPayment = adjusted.finalPayment;
+      totalDiscount = adjusted.totalDiscount;
+
+      if (finalPayment.isZero()) break;
     }
 
-    // 4. 최종 적립 포인트 계산
-    const accumulatedPoints = finalPayment
-      .times(this.pointRates[userTier])
-      .floor();
+    const accumulatedPoints = finalPayment.times(this.pointRates[userTier]).floor();
 
-    return new ReceiptDto(
-      originalTotal,
-      totalDiscount,
-      finalPayment,
-      accumulatedPoints,
-    );
+    return new ReceiptDto(originalTotal, totalDiscount, finalPayment, accumulatedPoints);
+  }
+
+  // --- 은닉된 세부 구현 메서드들 (Private) ---
+
+  private calculateDiscountAmount(currentAmount: Decimal, coupon: CouponDto): Decimal {
+    switch (coupon.type) {
+      case 'FIXED':
+        return coupon.value;
+      
+      case 'PERCENT': {
+        const calculatedDiscount = currentAmount.times(coupon.value).floor();
+        return this.applyMaxCap(calculatedDiscount, coupon.maxDiscountAmount);
+      }
+      
+      default:
+        return new Decimal(0); // 알 수 없는 쿠폰 타입 방어
+    }
+  }
+
+  private applyMaxCap(discount: Decimal, maxCap?: Decimal): Decimal {
+    if (maxCap && discount.greaterThan(maxCap)) {
+      return maxCap;
+    }
+    return discount;
+  }
+
+  private preventNegativePayment(finalPayment: Decimal, totalDiscount: Decimal) {
+    if (finalPayment.isNegative()) {
+      return {
+        totalDiscount: totalDiscount.minus(finalPayment.abs()),
+        finalPayment: new Decimal(0),
+      };
+    }
+    return { finalPayment, totalDiscount };
   }
 }
